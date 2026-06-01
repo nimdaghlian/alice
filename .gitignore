@@ -1,0 +1,2 @@
+# hardware-configuration.nix files are machine-specific but intentionally committed
+# so each Alice unit's profile is preserved in the repo

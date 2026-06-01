@@ -72,12 +72,17 @@ Config lives in `nixos/` at the root of this repo.
 
 ```
 nixos/
-  flake.nix                          # entry point, pins nixpkgs 25.05
+  flake.nix                          # entry point, pins nixpkgs 25.05; one entry per machine
   hosts/
     alice/
-      default.nix                    # system config — desktop, users, services
-      hardware-configuration.nix     # generated during install, machine-specific
+      default.nix                    # shared config for all Alice machines
+    alice-1/
+      hardware-configuration.nix     # machine-specific, committed to repo
+    alice-2/
+      hardware-configuration.nix     # (future)
 ```
+
+Each physical Alice unit gets its own numbered directory under `hosts/`. The shared system config (`hosts/alice/default.nix`) applies to all of them. To add a new machine, generate its hardware config and add a new entry to `flake.nix`.
 
 ### Planned modules (production flake)
 
@@ -131,17 +136,17 @@ mount /dev/sda1 /mnt/boot
 **4. Generate hardware config**
 
 ```bash
+git clone https://github.com/nimdaghlian/alice /tmp/alice
 nixos-generate-config --root /mnt
+cp /mnt/etc/nixos/hardware-configuration.nix /tmp/alice/nixos/hosts/alice-1/hardware-configuration.nix
 ```
 
-Copy `/mnt/etc/nixos/hardware-configuration.nix` into `nixos/hosts/alice/hardware-configuration.nix` in this repo (replaces the placeholder).
+This file is machine-specific (disk UUIDs, kernel modules) and committed to the repo so each unit's profile is preserved. For subsequent machines use `alice-2`, `alice-3`, etc.
 
 **5. Install**
 
-Copy this repo to the live environment or mount the USB with the repo, then:
-
 ```bash
-nixos-install --flake /path/to/alice/nixos#alice --root /mnt
+nixos-install --flake /tmp/alice/nixos#alice-1
 ```
 
 Set the `gallery` user password when prompted.
