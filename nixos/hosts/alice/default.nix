@@ -8,9 +8,11 @@
   # Hostname
   networking.hostName = "alice";
 
-  # NetworkManager handles WiFi during setup;
-  # will be replaced with hostapd AP config in production
-  networking.networkmanager.enable = true;
+  # WiFi access point (hostapd + dnsmasq) and attendant aliases
+  imports = [
+    ../../modules/wifi-ap.nix
+    ../../modules/aliases.nix
+  ];
 
   # TODO: set to gallery's actual timezone
   time.timeZone = "America/Los_Angeles";
