@@ -56,7 +56,7 @@ The attendant does not need to use a terminal for routine work. All terminal ope
 
 Alice creates its own isolated WiFi network. It does **not** serve content over the internet.
 
-- **SSID**: TBD (set during production install)
+- **SSID**: set in `/etc/alice/wifi-credentials` during install (see Installation, step 5b)
 - **Gateway / site URL**: `http://10.0.0.1` (or `http://alice.local`)
 - **QR code**: Printed or displayed near the kiosk — encodes WiFi join credentials
 - **Internet access**: Alice *can* connect to the internet (for updates, Tailscale) but does not expose the Jekyll site publicly
@@ -89,9 +89,9 @@ Each physical Alice unit gets its own numbered directory under `hosts/`. The sha
 These will be split into separate module files under `nixos/modules/` as the config grows:
 
 - `gnome.nix` — desktop, autologin, kiosk hardening
-- `wifi-ap.nix` — hostapd + dnsmasq config
+- `wifi-ap.nix` — hostapd + dnsmasq config (implemented)
 - `jekyll.nix` — Jekyll systemd service (watch mode)
-- `aliases.nix` — attendant-facing bash aliases
+- `aliases.nix` — attendant-facing bash aliases (implemented; currently just `wifi-qr`, more to follow)
 - `tailscale.nix` — Tailscale + SSH
 - `drives.nix` — asset drive mount
 
@@ -111,19 +111,38 @@ These will be split into separate module files under `nixos/modules/` as the con
 
 Enter BIOS (F1 on ThinkCentre at POST), set boot order to USB first.
 
-**2. Partition disks**
+**2. Drop into a root shell**
 
-After booting the live environment:
+The live environment requires `sudo` for disk operations. To avoid typing it repeatedly:
 
 ```bash
-lsblk                    # identify system drive (e.g. /dev/sda) and asset drive
-fdisk /dev/sda           # or use parted / gdisk
-# Create:
-#   /dev/sda1  512MB   EFI System Partition  (type: EFI System)
-#   /dev/sda2  rest    Linux filesystem       (type: Linux filesystem)
+sudo -i
 ```
 
-**3. Format and mount**
+**3. Partition disks**
+
+First identify the target drive — be careful not to confuse it with the USB installer:
+
+```bash
+lsblk    # system drive is ~400GB; USB will be smaller with the ISO on it
+```
+
+**If the drive has an existing OS (e.g. Windows)**, wipe it first:
+
+```bash
+wipefs -a /dev/sda
+```
+
+Then create a fresh GPT partition table:
+
+```bash
+parted /dev/sda -- mklabel gpt
+parted /dev/sda -- mkpart ESP fat32 1MB 512MB
+parted /dev/sda -- set 1 esp on
+parted /dev/sda -- mkpart primary ext4 512MB 100%
+```
+
+**4. Format and mount**
 
 ```bash
 mkfs.fat -F32 /dev/sda1
@@ -133,7 +152,9 @@ mkdir -p /mnt/boot
 mount /dev/sda1 /mnt/boot
 ```
 
-**4. Generate hardware config**
+Run `lsblk` again to confirm the layout looks right before continuing.
+
+**5. Generate hardware config**
 
 ```bash
 git clone https://github.com/nimdaghlian/alice /tmp/alice
@@ -143,7 +164,26 @@ cp /mnt/etc/nixos/hardware-configuration.nix /tmp/alice/nixos/hosts/alice-1/hard
 
 This file is machine-specific (disk UUIDs, kernel modules) and committed to the repo so each unit's profile is preserved. For subsequent machines use `alice-2`, `alice-3`, etc.
 
-**5. Install**
+Commit the hardware config locally to avoid a "dirty git tree" warning during install:
+
+```bash
+cd /tmp/alice
+git add nixos/hosts/alice-1/hardware-configuration.nix
+git commit -m "add alice-1 hardware config"
+```
+
+**5b. Seed WiFi credentials**
+
+```bash
+mkdir -p /mnt/etc/alice
+cp /tmp/alice/nixos/hosts/alice/wifi-credentials.example /mnt/etc/alice/wifi-credentials
+chmod 600 /mnt/etc/alice/wifi-credentials
+$EDITOR /mnt/etc/alice/wifi-credentials   # fill in real SSID/password
+```
+
+This file lives outside git and outside the Nix store — `hostapd` and the `wifi-qr` alias both read it at runtime.
+
+**6. Install**
 
 ```bash
 nixos-install --flake /tmp/alice/nixos#alice-1
@@ -151,14 +191,22 @@ nixos-install --flake /tmp/alice/nixos#alice-1
 
 Set the `gallery` user password when prompted.
 
-**6. First boot**
+**7. First boot**
 
 Reboot, remove USB. Log in as `gallery`. Run `passwd gallery` to set a password if not set during install.
 
-**7. Verify**
+**8. Verify**
 
 - GNOME desktop loads
 - `ssh gallery@alice.ts.net` works from another machine (once Tailscale is set up)
+
+**9. Print the WiFi join QR code**
+
+```bash
+wifi-qr
+```
+
+Writes `/home/gallery/wifi-qr.png`. Print it and display it near the kiosk.
 
 ---
 
