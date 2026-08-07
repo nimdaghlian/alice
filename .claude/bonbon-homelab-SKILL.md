@@ -4,10 +4,10 @@ description: >
   Deep context skill for Dewalt's homelab infrastructure centered on "bonbon" — a ThinkCentre M720q
   running Debian with Coolify (Traefik reverse proxy), Docker, and Tailscale. Use this skill whenever
   working on anything related to bonbon, homelab services, The Well media archive, Coolify deployments,
-  Nextcloud/OpenCloud, copyparty, CrashPlan, Samba, Yazi, Alice kiosk, Reticulum/LoRa, ATProto/PDS,
-  or any self-hosted app on Dewalt's machines. Also trigger for NixOS flake configs, new machine provisioning,
-  or any self-hosted app on Dewalt's machines. Also trigger for networking questions involving Tailscale
-  MagicDNS, Cloudflare Tunnels, Tailscale Funnel, or inter-machine connectivity across the homelab fleet.
+  Nextcloud/OpenCloud, copyparty, CrashPlan, Samba, Yazi, Reticulum/LoRa, ATProto/PDS, or any
+  self-hosted app on Dewalt's machines. Also trigger for new machine provisioning, or for networking
+  questions involving Tailscale MagicDNS, Cloudflare Tunnels, Tailscale Funnel, or inter-machine
+  connectivity across the homelab fleet. For the Alice gallery kiosk specifically, use the `alice` skill.
 ---
 
 # Bonbon Homelab Skill
@@ -21,7 +21,7 @@ Read this before making any recommendations or writing any config/code related t
 |---|---|---|---|
 | **bonbon** | ThinkCentre M720q | Debian | Primary homelab server — Docker, Coolify, main services |
 | **screb** | ThinkPad x220 | Peppermint OS | Workstation / X11 forwarding host |
-| **alice** | ThinkCentre M710q | NixOS + GNOME | Gallery kiosk — Jekyll collection browser, WiFi AP, attendant-managed |
+| **alice** | ThinkCentre M710q | NixOS + GNOME | Gallery kiosk, attendant-managed — see the `alice` skill |
 | Mac | Mac (main workstation) | macOS | Dev machine, iTerm2, Homebrew |
 | Boox | Onyx Boox Go7 | Android | E-ink reader, WebDAV/Seafile sync |
 
@@ -105,41 +105,9 @@ Both were set up simultaneously on bonbon for comparison. Port conflicts on port
 
 ### Alice (Gallery Kiosk)
 
-**Hardware**: ThinkCentre M710q, ~400GB system drive + second internal drive for audio/video assets  
-**OS**: NixOS flake, GNOME desktop  
-**Status**: NixOS flake config being built; machine physically on-hand, not yet installed
-
-#### Purpose
-Art gallery kiosk managed by a non-technical attendant. Visitors connect to Alice's WiFi and browse a Jekyll site presenting the gallery's digital collection. Alice does **not** access bonbon's Well — all assets stored locally on the second drive.
-
-#### Storage Layout
-- **Drive 1 (system)**: NixOS OS, Jekyll site, make-gals tool, Obsidian vault
-- **Drive 2 (assets)**: Audio and video files, separated from system drive
-
-#### Attendant Workflow
-1. Dump new media assets into assigned directories on Drive 2
-2. Run `make-gals` (Node.js CLI at `~/make-gals/`) to generate Jekyll-ready Markdown frontmatter files for the new assets
-3. Edit the generated MD files in Obsidian (add titles, tags, descriptions)
-4. Jekyll (running in watch mode) auto-rebuilds — no manual step needed
-
-All CLI operations are wrapped in **well-documented bash aliases** so the attendant doesn't need to remember Unix commands.
-
-#### make-gals
-Node.js CLI (`bin/make-gals.js`) that scans a gallery directory and outputs:
-- `_galleries/<slug>.md` — gallery-level frontmatter
-- `_media/<gallery>/<slug>.md` — per-asset frontmatter
-
-Each gallery directory contains a `gallery.yml` config. Supports image, audio, and video templates. Reads EXIF dates from images.
-
-#### Networking
-- Alice creates its own WiFi LAN via **hostapd + dnsmasq** (AP mode)
-- Serves the Jekyll site on that network (e.g., `http://10.0.0.1` or `http://alice.local`)
-- **QR code** displayed or printed for visitors to join the network
-- Alice can connect to the internet if needed (for updates, Tailscale, etc.) but does not serve over the internet
-- **Tailscale** installed for remote management/SSH by Dewalt
-
-#### Planned (not yet)
-- Syncthing to sync Alice's asset/MD directories to other machines
+Moved out of this skill — **use the `alice` skill**. Alice is self-contained: it does not access
+bonbon's Well, uses no Docker/Coolify, and no longer runs Tailscale, so it shares no infrastructure
+with the rest of the fleet.
 
 ### Octothorpes Integration
 - Existing CLI tool for tagging/metadata
@@ -175,7 +143,7 @@ rproxy: 1
 
 ## Key Constraints & Preferences
 
-- **New machines use NixOS** — bonbon stays Debian, but Alice and any future machines use NixOS flakes. Alice does not use Docker/Coolify — services run as native NixOS systemd units (Jekyll, hostapd, dnsmasq, Tailscale).
+- **New machines use NixOS** — bonbon stays Debian, but Alice and any future machines use NixOS flakes, with services as native systemd units rather than Docker/Coolify.
 - **No Caddy** — removed, non-functional
 - **No Proxmox** — chose Debian + Docker directly
 - **No RAID** — prefer MergerFS + SnapRAID or single drive + CrashPlan
@@ -192,5 +160,5 @@ rproxy: 1
 - `references/machines.md` — Extended machine specs and network addresses (fill in as discovered)
 
 ### Alice-specific
-- `docs/alice.md` — Full Alice documentation: hardware, software stack, attendant workflow, network setup, installation guide, bash alias reference. Keep this up to date.
-- `nixos/` — NixOS flake config. `flake.nix` + `hosts/alice/` for host config. Modules split into `nixos/modules/` as config grows.
+- See the `alice` skill (`.claude/skills/alice/SKILL.md`) — it owns `docs/alice.md`, the `nixos/`
+  flake, and everything else kiosk-related.
