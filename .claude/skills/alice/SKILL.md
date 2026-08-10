@@ -2,10 +2,11 @@
 name: alice
 description: >
   Use when working on Alice — the NixOS gallery kiosk in ~/dev/alice. Covers the NixOS flake and its
-  modules (wifi-ap, aliases, eleventy), the hostapd/dnsmasq WiFi access point and QR join code, the
-  memex2 CLI + Eleventy site that replaced make-gals and Jekyll, the attendant workflow and bash
-  aliases, and the install procedure. Also use for questions about what on Alice is actually built
-  versus only designed.
+  modules (wifi-ap, aliases, eleventy, nginx), the hostapd/dnsmasq WiFi access point and QR join code,
+  the memex2 CLI + Eleventy site that replaced make-gals and Jekyll, the nginx + eleventy --watch
+  serving split (avoids duplicating the media library), the attendant workflow and bash aliases, and
+  the install procedure. Also use for questions about what on Alice is actually built versus only
+  designed.
 ---
 
 # Alice
@@ -30,8 +31,9 @@ before assuming a feature exists.
 | Example WiFi credentials file | **Implemented**, committed |
 | memex2 migration (Eleventy, `memex process`, `http://alice`) | **Spec only** — `docs/superpowers/specs/2026-08-06-memex2-migration-design.md`. No code written. |
 | `make-gallery`, `gallery-status`, `restart-site` aliases | **Not built** — listed in `docs/alice.md`'s table, but `aliases.nix` contains only `wifi-qr` |
-| `eleventy.nix` module | **Not built** |
+| `eleventy.nix`, `nginx.nix` modules | **Not built** |
 | `gnome.nix`, `drives.nix` | **Not built** |
+| memex2 "external library mode" (CLI-side option to serve the library from outside the checkout) | **Being designed** — not yet spec'd. Affects how memex2 generates asset URLs; lives in the memex2 repo, not this one. |
 
 **Nothing in `nixos/` has ever been evaluated by Nix.** The dev machine is a Mac with no `nix`
 installed, so `nix flake check` and every build/eval step have been skipped throughout. Treat the
@@ -67,6 +69,25 @@ the checkout.
 
 If someone proposes `buildNpmPackage` for memex2, that was considered and rejected for this reason.
 
+## Serving: nginx + eleventy --watch, not eleventy --serve
+
+Alice does **not** run Eleventy's own dev server (`--serve`) in production. Confirmed against
+Eleventy's source (`~/dev/memex2/node_modules/@11ty/eleventy` v3.1.6,
+`Util/PassthroughCopyBehaviorCheck.js`): Eleventy's no-copy passthrough behavior only applies when
+`runMode === "serve"`. Under `--watch` (needed for the curator's live-reload while cataloging), every
+rebuild does a real `recursive-copy` of passthrough content — including `site/library`, which can be
+large — into `_site/library`. That's a real, sourced problem, not a guess.
+
+The fix: `eleventy --watch` runs build-only (no server, no port), and `nginx` is the single listener
+on port 80 with two roots — `/` → `_site/` (Eleventy's HTML output), `/library/` → an `alias`
+straight to `site/library/` (the source, never copied). See
+`docs/superpowers/specs/2026-08-06-memex2-migration-design.md`'s "Serving architecture" section for
+the full rationale. **Spec'd, not built** — same status as the rest of the memex2 migration.
+
+**Cross-repo dependency:** memex2's `eleventy.config.js` still has
+`addPassthroughCopy({ 'site/library': 'library' })`, which needs removing there — an Alice-side nginx
+config doesn't undo that. That edit belongs in `~/dev/memex2`, not here.
+
 ## Attendant workflow
 
 The attendant never needs raw Unix commands — everything is a named bash alias with a plain-English
@@ -82,7 +103,7 @@ purpose.
 |---|---|---|
 | `wifi-qr` | Writes `/home/gallery/wifi-qr.png` from the credentials file | yes |
 | `make-gallery` | `memex process` on a gallery directory | no |
-| `gallery-status` | Health of `hostapd`, `dnsmasq`, `eleventy` | no |
+| `gallery-status` | Health of `hostapd`, `dnsmasq`, `eleventy`, `nginx` | no |
 | `restart-site` | Restart the Eleventy service | no |
 | `update-system` | Pull config, `nixos-rebuild switch` | no |
 
@@ -93,8 +114,8 @@ Isolated AP, no public exposure. Visitors scan a printed QR code to join, then b
 - Gateway `10.0.0.1`, subnet `10.0.0.0/24`, DHCP pool `.50`–`.150`
 - Clients are handed Alice as their DNS server, so dnsmasq can answer for local names
 - Target URL is **`http://alice`** (spec'd, not built — needs an `address=/alice/10.0.0.1` dnsmasq
-  entry plus Eleventy binding port 80 via `CAP_NET_BIND_SERVICE`). `alice.local` in `docs/alice.md`
-  is stale — no mDNS/avahi is configured.
+  entry; the port-80 listener is nginx, not Eleventy — see "Serving" above). `alice.local` in
+  `docs/alice.md` is stale — no mDNS/avahi is configured.
 - Visitors should type the full `http://alice`; a bare `alice` has no dot and some browsers treat it
   as a search query
 
@@ -122,6 +143,8 @@ nixos/
   hosts/alice-1/hardware-configuration.nix   # per-machine, committed
   modules/wifi-ap.nix              # hostapd + dnsmasq
   modules/aliases.nix              # attendant aliases
+  modules/eleventy.nix             # (planned) eleventy --watch build service
+  modules/nginx.nix                # (planned) serves _site/ + site/library/ on :80
 docs/alice.md                      # main doc — PARTLY STALE, see below
 docs/superpowers/specs/            # design specs
 docs/superpowers/plans/            # implementation plans
@@ -150,8 +173,12 @@ The memex2 spec lists the specific edits needed. Fixing this doc is outstanding 
   but the memex2 spec puts the asset library inside the checkout (`site/library`) on the system
   drive so Eleventy can serve it. These conflict and it is undecided. Ask before writing anything
   that depends on the answer; don't assume either layout.
-- Whether Eleventy's dev server binds all interfaces or only loopback — unconfirmed. If it's
-  loopback-only, the fix belongs in memex2's own `eleventy.config.js`, not Alice's Nix config.
+- **"External library mode" for memex2.** Being designed (not yet spec'd): a CLI-side option to
+  serve the library from outside the memex2 checkout as an alternative to the standard in-checkout
+  layout, which also changes how memex2 generates asset URLs. This affects the memex2 repo, not
+  Alice's Nix config directly — but it interacts with the nginx `/library/` alias above and may
+  eventually resolve the "where assets live" question below. Check `~/dev/memex2` and any spec under
+  its own docs before assuming the current `site/library`-relative URL scheme still holds.
 
 ## Conventions
 
