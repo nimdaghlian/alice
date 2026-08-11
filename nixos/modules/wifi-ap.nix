@@ -41,11 +41,23 @@ in
   };
 
   config = {
-    networking.networkmanager.unmanaged = [ cfg.interface ];
+    # Keep NetworkManager off the AP interface entirely — hostapd owns it. NM's unmanaged-devices
+    # syntax requires a qualifier ("interface-name:", "mac:", "type:"); a bare device name is not
+    # a valid match spec and would silently fail to exclude anything.
+    networking.networkmanager.unmanaged = [ "interface-name:${cfg.interface}" ];
 
     networking.interfaces.${cfg.interface}.ipv4.addresses = [
       { address = "10.0.0.1"; prefixLength = 24; }
     ];
+
+    # Without these, visitors associate with the WiFi but never get a DHCP lease — it presents as
+    # "the network is broken", not as a blocked port. Scoped to the AP interface so Alice does not
+    # act as an open DNS resolver / DHCP server on any other network it joins (e.g. ethernet for
+    # updates). Port 80 is opened by nginx.nix when that module is built.
+    networking.firewall.interfaces.${cfg.interface} = {
+      allowedUDPPorts = [ 53 67 ];   # DNS, DHCP server
+      allowedTCPPorts = [ 53 ];      # DNS over TCP (large responses)
+    };
 
     systemd.services.hostapd = {
       description = "Alice WiFi access point";
