@@ -2,6 +2,10 @@
 
 Art gallery kiosk running NixOS. Managed by a non-technical attendant. Visitors connect to Alice's WiFi and browse the gallery's digital collection at `http://alice`.
 
+For a checklist of everything that must be configured by hand on each machine, see the
+[README](../README.md). This document is the full reference: architecture, workflow, and the
+step-by-step install walkthrough.
+
 ---
 
 ## Hardware
@@ -225,13 +229,18 @@ The site builder (`eleventy`) will fail to start until `npm install` has been ru
 
 **9. Put the configuration repo in place**
 
-So `update-system` can pull and rebuild later:
+So `update-system` can pull and rebuild later. `nixos-generate-config` wrote its own files to
+`/etc/nixos` back in step 5, so that directory is **always** non-empty at this point and the clone
+will fail unless you move it aside first:
 
 ```bash
+sudo mv /etc/nixos /etc/nixos.orig
 sudo git clone https://github.com/nimdaghlian/alice /etc/nixos
 ```
 
-(If `/etc/nixos` already exists from the installer, move it aside first.)
+Nothing in `/etc/nixos.orig` is needed — the hardware config it contains was already copied into the
+repo in step 5, and the flake replaces `configuration.nix` entirely. Keep it until the first
+`update-system` succeeds, then delete it.
 
 **10. Verify**
 
