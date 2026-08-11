@@ -77,7 +77,10 @@ in
         interface = cfg.interface;
         bind-interfaces = true;
         "dhcp-range" = [ "10.0.0.50,10.0.0.150,24h" ];
+        # 3 = default gateway, 6 = DNS server — both Alice, so the name below resolves.
         "dhcp-option" = [ "3,10.0.0.1" "6,10.0.0.1" ];
+        # Makes http://alice work for anyone on the WiFi, with no client-side configuration.
+        "address" = [ "/alice/10.0.0.1" ];
       };
     };
   };

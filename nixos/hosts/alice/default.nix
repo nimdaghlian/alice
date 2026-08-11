@@ -1,10 +1,12 @@
 { config, pkgs, ... }:
 
 {
-  # WiFi access point (hostapd + dnsmasq) and attendant aliases
   imports = [
-    ../../modules/wifi-ap.nix
-    ../../modules/aliases.nix
+    ../../modules/settings.nix   # timezone/locale/gallery name
+    ../../modules/wifi-ap.nix    # hostapd + dnsmasq
+    ../../modules/eleventy.nix   # memex2 site builder (watch mode)
+    ../../modules/nginx.nix      # serves the built site + media library
+    ../../modules/aliases.nix    # attendant commands
   ];
 
   # Bootloader — assumes UEFI (ThinkCentre M710q ships with UEFI)
@@ -24,11 +26,7 @@
   # up the predictable name (wlpXsY) on each unit. Override alice.wifiAp.interface if this changes.
   networking.usePredictableInterfaceNames = false;
 
-  # TODO: set to gallery's actual timezone
-  time.timeZone = "America/Los_Angeles";
-
-  # Locale
-  i18n.defaultLocale = "en_US.UTF-8";
+  # Timezone and locale come from nixos/config.nix via modules/settings.nix.
 
   # GNOME desktop
   services.xserver.enable = true;
@@ -49,13 +47,13 @@
   # SSH — for remote management by admin
   services.openssh.enable = true;
 
-  # Basic packages for first-boot testing
+  # nodejs runs memex2 (its CLI and Eleventy); git clones and updates both repos.
   environment.systemPackages = with pkgs; [
     git
     vim
     curl
     wget
-    jekyll
+    nodejs
   ];
 
   # Must match the nixpkgs version in flake.nix

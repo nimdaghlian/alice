@@ -26,20 +26,33 @@ before assuming a feature exists.
 
 | Area | Status |
 |---|---|
-| WiFi AP (`nixos/modules/wifi-ap.nix`) | **Implemented**, committed — never validated by Nix (see below) |
-| `wifi-qr` alias (`nixos/modules/aliases.nix`) | **Implemented**, committed — never validated by Nix |
+| WiFi AP (`modules/wifi-ap.nix`) — hostapd, dnsmasq, firewall | **Implemented**, committed — never validated by Nix (see below) |
+| Preferences (`config.nix` + `modules/settings.nix`) | **Implemented** — timezone/locale/galleryName, shared with per-unit override |
+| Site builder (`modules/eleventy.nix`) + web server (`modules/nginx.nix`) | **Implemented** |
+| All five attendant aliases (`modules/aliases.nix`) | **Implemented** |
 | Example WiFi credentials file | **Implemented**, committed |
-| memex2 migration (Eleventy, `memex process`, `http://alice`) | **Spec only** — `docs/superpowers/specs/2026-08-06-memex2-migration-design.md`. No code written. |
-| `make-gallery`, `gallery-status`, `restart-site` aliases | **Not built** — listed in `docs/alice.md`'s table, but `aliases.nix` contains only `wifi-qr` |
-| `eleventy.nix`, `nginx.nix` modules | **Not built** |
-| `gnome.nix`, `drives.nix` | **Not built** |
-| memex2 "external library mode" (CLI-side option to serve the library from outside the checkout) | **Being designed** — not yet spec'd. Affects how memex2 generates asset URLs; lives in the memex2 repo, not this one. |
+| `gnome.nix` (autologin/kiosk hardening), `drives.nix` | **Not built** |
+| memex2 "external library mode" | **Spec'd in the memex2 repo** (`docs/specs/2026-08-10-external-library-mode-design.md`), implementation in progress there. Adds `libraryMode`/`libraryUrl` config. Alice switches to `external` once it lands. |
+
+**Nothing has been installed on real hardware yet.** The whole config is pre-first-boot.
 
 **Nothing in `nixos/` has ever been evaluated by Nix.** The dev machine is a Mac with no `nix`
 installed, so `nix flake check` and every build/eval step have been skipped throughout. Treat the
 whole flake as unverified — syntax errors, wrong option names, and bad module merges are all still
-live possibilities. Run `nix flake check` from `nixos/` on a Nix-capable machine before trusting any
-of it. Eval works fine cross-platform from macOS if Nix is installed; a full build needs Linux.
+live possibilities. Eval works fine cross-platform from macOS if Nix is installed; a full build
+needs Linux.
+
+**And `flake check` cannot fully succeed yet regardless**, because `hosts/alice-1/hardware-configuration.nix`
+is still a stub with no `fileSystems."/"` — NixOS can't build a system without a root filesystem, so
+eval dies there before reaching the real config. It gets replaced by `nixos-generate-config` during
+install. To validate earlier, temporarily add a dummy `fileSystems."/"` and check that. Practically:
+expect a few edit-and-retry cycles during the first `nixos-install`.
+
+Highest-risk unverified guesses, in rough order: `services.dnsmasq.settings` schema, the
+`networking.firewall.interfaces.<iface>` option path, NetworkManager's `interface-name:` unmanaged
+syntax, whether `npx` works under systemd with `HOME` set to the checkout, and whether nginx can
+traverse `/home/gallery` to reach the site (the `users.users.nginx.extraGroups` line in `nginx.nix`
+is an attempt at that, and may need `755` on the home directory instead).
 
 ## Software stack
 
@@ -56,8 +69,8 @@ lives at `~/dev/memex2` (separate repo, private at time of writing, expected to 
 one repo containing both a CLI (`memex process|tag|update|verify`) and the Eleventy site that builds
 the CLI's output.
 
-**Tailscale is no longer part of Alice.** `docs/alice.md` still lists it and still tells you to
-verify with `ssh gallery@alice.ts.net` — that is stale.
+**Tailscale is no longer part of Alice.** Remote admin is plain SSH over whatever network Alice is
+on. If you see Tailscale mentioned anywhere, it's stale.
 
 ## memex2 deployment model
 
@@ -82,7 +95,7 @@ The fix: `eleventy --watch` runs build-only (no server, no port), and `nginx` is
 on port 80 with two roots — `/` → `_site/` (Eleventy's HTML output), `/library/` → an `alias`
 straight to `site/library/` (the source, never copied). See
 `docs/superpowers/specs/2026-08-06-memex2-migration-design.md`'s "Serving architecture" section for
-the full rationale. **Spec'd, not built** — same status as the rest of the memex2 migration.
+the full rationale. Built, in `modules/eleventy.nix` and `modules/nginx.nix`.
 
 **Cross-repo dependency:** memex2's `eleventy.config.js` still has
 `addPassthroughCopy({ 'site/library': 'library' })`, which needs removing there — an Alice-side nginx
@@ -99,13 +112,15 @@ purpose.
 3. Edit the generated `.md` in Obsidian — titles, descriptions, tags
 4. The site rebuilds and re-serves automatically; no further action
 
-| Alias | Does | Built? |
-|---|---|---|
-| `wifi-qr` | Writes `/home/gallery/wifi-qr.png` from the credentials file | yes |
-| `make-gallery` | `memex process` on a gallery directory | no |
-| `gallery-status` | Health of `hostapd`, `dnsmasq`, `eleventy`, `nginx` | no |
-| `restart-site` | Restart the Eleventy service | no |
-| `update-system` | Pull config, `nixos-rebuild switch` | no |
+All five are built, in `modules/aliases.nix`:
+
+| Alias | Does |
+|---|---|
+| `wifi-qr` | Writes `/home/gallery/wifi-qr.png` from the credentials file |
+| `make-gallery <dir>` | `memex process` on a gallery directory |
+| `gallery-status` | Plain-English health of `hostapd`, `dnsmasq`, `eleventy`, `nginx` |
+| `restart-site` | Restart the Eleventy builder (not nginx — it serves whatever is on disk) |
+| `update-system` | `git pull` in `alice.configRepo`, then rebuild `alice.unit` |
 
 ## Network
 
@@ -113,9 +128,12 @@ Isolated AP, no public exposure. Visitors scan a printed QR code to join, then b
 
 - Gateway `10.0.0.1`, subnet `10.0.0.0/24`, DHCP pool `.50`–`.150`
 - Clients are handed Alice as their DNS server, so dnsmasq can answer for local names
-- Target URL is **`http://alice`** (spec'd, not built — needs an `address=/alice/10.0.0.1` dnsmasq
-  entry; the port-80 listener is nginx, not Eleventy — see "Serving" above). `alice.local` in
-  `docs/alice.md` is stale — no mDNS/avahi is configured.
+- Target URL is **`http://alice`**, via an `address=/alice/10.0.0.1` dnsmasq entry; the port-80
+  listener is nginx, not Eleventy (see "Serving" above). There is no mDNS/avahi — `alice.local`
+  will not work.
+- DNS (53), DHCP (67), and HTTP (80) are firewalled to the AP interface only, so Alice is not an
+  open resolver or web server on any other network it joins. Forgetting this is why an AP can look
+  "broken" — clients associate but never get a lease.
 - Visitors should type the full `http://alice`; a bare `alice` has no dot and some browsers treat it
   as a search query
 
@@ -137,15 +155,18 @@ no silent fallback to placeholder values.
 
 ```
 nixos/
-  flake.nix                        # nixpkgs 25.05; mkAlice helper, one entry per machine
+  flake.nix                        # nixpkgs 25.05; mkAlice "alice-N", merges preferences
+  config.nix                       # shared preferences (timezone/locale/galleryName)
   hosts/alice/default.nix          # shared config for all Alice units
   hosts/alice/wifi-credentials.example
-  hosts/alice-1/hardware-configuration.nix   # per-machine, committed
-  modules/wifi-ap.nix              # hostapd + dnsmasq
-  modules/aliases.nix              # attendant aliases
-  modules/eleventy.nix             # (planned) eleventy --watch build service
-  modules/nginx.nix                # (planned) serves _site/ + site/library/ on :80
-docs/alice.md                      # main doc — PARTLY STALE, see below
+  hosts/alice-1/hardware-configuration.nix   # per-machine, committed (STUB until generated)
+  hosts/alice-1/config.nix         # optional per-unit preference overrides
+  modules/settings.nix             # applies config.nix; declares alice.unit/configRepo
+  modules/wifi-ap.nix              # hostapd + dnsmasq + AP firewall
+  modules/eleventy.nix             # eleventy --watch build service
+  modules/nginx.nix                # serves _site/ + site/library/ on :80
+  modules/aliases.nix              # the five attendant commands
+docs/alice.md                      # main doc — current as of the memex2 migration
 docs/superpowers/specs/            # design specs
 docs/superpowers/plans/            # implementation plans
 ```
@@ -154,31 +175,25 @@ Each physical unit gets its own `hosts/alice-N/` with a committed `hardware-conf
 `hosts/alice/default.nix` is shared across all of them. Config is split into `nixos/modules/*.nix`
 as it grows.
 
-## Known-stale content in docs/alice.md
+## Preferences
 
-`docs/alice.md` is the main human-facing doc and has not been updated for the memex2 migration.
-Do not treat it as current on:
+`nixos/config.nix` holds shared build-time preferences (`timezone`, `locale`, `galleryName`), a plain
+Nix attrset. A unit overrides any subset by adding `hosts/alice-N/config.nix`; `flake.nix` merges
+them (per-unit wins) and passes the result as `alice.settings`, applied by `modules/settings.nix`.
 
-- Jekyll and make-gals (both replaced by memex2)
-- Tailscale (dropped) and the `ssh gallery@alice.ts.net` verify step
-- `http://alice.local` (no mDNS; the target is `http://alice`)
-- The aliases table, which lists aliases that don't exist yet
-- The "Custom Nix Packages" table, whose Jekyll/make-gals rows are obsolete
+YAML was asked for but isn't viable — Nix has `fromJSON`/`fromTOML` but no YAML parser, and the IFD
+workaround breaks under `nix flake check`.
 
-The memex2 spec lists the specific edits needed. Fixing this doc is outstanding work.
+Two related options live outside `alice.settings` because they're plumbing, not preferences:
+`alice.unit` (the flake attribute name, set automatically by `flake.nix`, since hostname `alice` is
+shared across units and can't identify one) and `alice.configRepo` (default `/etc/nixos`, the
+on-machine clone `update-system` pulls from).
 
 ## Open questions
 
-- **Where assets actually live.** `docs/alice.md` describes a second internal drive for audio/video,
-  but the memex2 spec puts the asset library inside the checkout (`site/library`) on the system
-  drive so Eleventy can serve it. These conflict and it is undecided. Ask before writing anything
-  that depends on the answer; don't assume either layout.
-- **"External library mode" for memex2.** Being designed (not yet spec'd): a CLI-side option to
-  serve the library from outside the memex2 checkout as an alternative to the standard in-checkout
-  layout, which also changes how memex2 generates asset URLs. This affects the memex2 repo, not
-  Alice's Nix config directly — but it interacts with the nginx `/library/` alias above and may
-  eventually resolve the "where assets live" question below. Check `~/dev/memex2` and any spec under
-  its own docs before assuming the current `site/library`-relative URL scheme still holds.
+- **Where assets live long-term.** The media library currently sits inside the memex2 checkout on
+  the system drive (`site/library`), which is what nginx's `/library/` alias points at. The
+  second-drive idea from earlier docs is deferred, pending memex2's external library mode.
 
 ## Conventions
 

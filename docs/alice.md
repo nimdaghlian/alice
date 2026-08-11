@@ -1,6 +1,6 @@
 # Alice
 
-Art gallery kiosk running NixOS. Managed by a non-technical attendant. Visitors connect to Alice's WiFi and browse the gallery's digital collection via a local Jekyll site.
+Art gallery kiosk running NixOS. Managed by a non-technical attendant. Visitors connect to Alice's WiFi and browse the gallery's digital collection at `http://alice`.
 
 ---
 
@@ -9,8 +9,7 @@ Art gallery kiosk running NixOS. Managed by a non-technical attendant. Visitors 
 | | |
 |---|---|
 | **Model** | ThinkCentre M710q |
-| **System drive** | ~400GB internal — OS, Jekyll site, tools, Obsidian vault |
-| **Asset drive** | Second internal drive — audio and video files |
+| **System drive** | ~400GB internal — OS, memex2 checkout (site + media library), Obsidian vault |
 | **Network** | Built-in WiFi — runs in AP (access point) mode |
 
 ## Software Stack
@@ -19,11 +18,11 @@ Art gallery kiosk running NixOS. Managed by a non-technical attendant. Visitors 
 |---|---|
 | NixOS (flake) | Operating system, declarative config |
 | GNOME | Desktop environment for attendant |
-| Jekyll | Serves the collection browser site, runs in watch mode |
-| make-gals | Node.js CLI — generates Jekyll MD files from asset directories |
+| memex2 | Node.js CLI (catalogs assets) + Eleventy site (the collection browser) |
+| Eleventy | Rebuilds the site whenever Records change (`--watch`, build only) |
+| nginx | Serves the built site and the media library on port 80 |
 | Obsidian | Attendant edits MD metadata files |
 | hostapd + dnsmasq | Creates Alice's own WiFi network |
-| Tailscale | Remote admin SSH access |
 | SSH | Remote management by admin |
 
 ---
@@ -34,21 +33,21 @@ The attendant does not need to use a terminal for routine work. All terminal ope
 
 ### Adding new assets
 
-1. Copy media files into the assigned gallery directory on the asset drive
-2. Open Terminal and run `make-gallery` (alias for the make-gals CLI)
-   - This generates one MD file per asset and one MD file for the gallery
+1. Copy media files into a gallery directory inside the media library (`~/memex2/site/library/`)
+2. Open Terminal and run `make-gallery <directory>`
+   - Catalogs the media: one Record per asset, plus one Collection for the directory
 3. Open Obsidian and edit the generated MD files — add titles, descriptions, tags
-4. The Jekyll site updates automatically (no action needed)
+4. The site updates automatically (no action needed)
 
 ### Starting up
 
 - Power on Alice
 - Log in as `gallery`
-- Jekyll starts automatically on boot — the collection site is immediately live on the WiFi network
+- The site builder and web server start automatically on boot — the collection is immediately live on the WiFi network
 
 ### Checking status
 
-- Run `gallery-status` to confirm Jekyll is running and the WiFi AP is active
+- Run `gallery-status` for a plain-English summary of the WiFi network, the site builder, and the web server
 
 ---
 
@@ -57,10 +56,10 @@ The attendant does not need to use a terminal for routine work. All terminal ope
 Alice creates its own isolated WiFi network. It does **not** serve content over the internet.
 
 - **SSID**: set in `/etc/alice/wifi-credentials` during install (see Installation, step 5b)
-- **Gateway / site URL**: `http://10.0.0.1` (or `http://alice.local`)
+- **Site URL**: `http://alice` (or `http://10.0.0.1`). Type the full `http://` — a bare `alice` has no dot, so some browsers treat it as a search term.
 - **QR code**: Printed or displayed near the kiosk — encodes WiFi join credentials
-- **Internet access**: Alice *can* connect to the internet (for updates, Tailscale) but does not expose the Jekyll site publicly
-- **AP stack**: hostapd (access point) + dnsmasq (DHCP + DNS)
+- **Internet access**: Alice *can* connect to the internet (for updates) but does not expose the collection publicly. DNS, DHCP, and HTTP are firewalled to the AP interface only.
+- **AP stack**: hostapd (access point) + dnsmasq (DHCP + DNS, and resolves `alice`)
 
 Visitors: scan QR code → join network → open browser → collection site loads automatically (captive portal redirect, or manual navigation to the URL).
 
@@ -73,27 +72,40 @@ Config lives in `nixos/` at the root of this repo.
 ```
 nixos/
   flake.nix                          # entry point, pins nixpkgs 25.05; one entry per machine
+  config.nix                         # shared preferences (timezone, locale, gallery name)
+  modules/
+    settings.nix                     # applies config.nix values
+    wifi-ap.nix                      # hostapd + dnsmasq
+    eleventy.nix                     # memex2 site builder (watch mode)
+    nginx.nix                        # serves built site + media library
+    aliases.nix                      # attendant commands
   hosts/
     alice/
       default.nix                    # shared config for all Alice machines
+      wifi-credentials.example       # install-time template
     alice-1/
       hardware-configuration.nix     # machine-specific, committed to repo
+      config.nix                     # optional per-unit preference overrides
     alice-2/
       hardware-configuration.nix     # (future)
 ```
 
 Each physical Alice unit gets its own numbered directory under `hosts/`. The shared system config (`hosts/alice/default.nix`) applies to all of them. To add a new machine, generate its hardware config and add a new entry to `flake.nix`.
 
-### Planned modules (production flake)
+### Preferences
 
-These will be split into separate module files under `nixos/modules/` as the config grows:
+`nixos/config.nix` holds settings you may want to change per install — timezone, locale, gallery name. To change one for a single unit only, create `hosts/alice-N/config.nix` containing just the keys that differ:
 
-- `gnome.nix` — desktop, autologin, kiosk hardening
-- `wifi-ap.nix` — hostapd + dnsmasq config (implemented)
-- `jekyll.nix` — Jekyll systemd service (watch mode)
-- `aliases.nix` — attendant-facing bash aliases (implemented; currently just `wifi-qr`, more to follow)
-- `tailscale.nix` — Tailscale + SSH
-- `drives.nix` — asset drive mount
+```nix
+{ timezone = "America/New_York"; galleryName = "East Wing"; }
+```
+
+Per-unit values win; anything not mentioned falls back to the shared defaults. These are build-time values — run `update-system` after changing them.
+
+### Still planned
+
+- `gnome.nix` — autologin, kiosk hardening
+- `drives.nix` — second-drive mount, if the media library outgrows the system drive
 
 ---
 
@@ -193,14 +205,41 @@ Set the `gallery` user password when prompted.
 
 **7. First boot**
 
-Reboot, remove USB. Log in as `gallery`. Run `passwd gallery` to set a password if not set during install.
+Reboot, remove USB. Log in as `gallery` with the initial password `password`, then change it:
 
-**8. Verify**
+```bash
+passwd gallery
+```
+
+**8. Install the collection software (memex2)**
+
+```bash
+git clone https://github.com/nimdaghlian/memex2 ~/memex2
+cd ~/memex2
+npm install
+cp memex.config.yml.example memex.config.yml
+$EDITOR memex.config.yml     # set memexId (this machine's identity)
+```
+
+The site builder (`eleventy`) will fail to start until `npm install` has been run — `gallery-status` reports this.
+
+**9. Put the configuration repo in place**
+
+So `update-system` can pull and rebuild later:
+
+```bash
+sudo git clone https://github.com/nimdaghlian/alice /etc/nixos
+```
+
+(If `/etc/nixos` already exists from the installer, move it aside first.)
+
+**10. Verify**
 
 - GNOME desktop loads
-- `ssh gallery@alice.ts.net` works from another machine (once Tailscale is set up)
+- `gallery-status` shows all four services OK
+- From a second device: join Alice's WiFi, open `http://alice`, confirm the collection loads
 
-**9. Print the WiFi join QR code**
+**11. Print the WiFi join QR code**
 
 ```bash
 wifi-qr
@@ -216,39 +255,32 @@ Defined in `nixos/modules/aliases.nix` (production). All aliases are documented 
 
 | Alias | What it does |
 |---|---|
-| `make-gallery` | Run make-gals on the current gallery directory |
-| `gallery-status` | Show status of Jekyll and WiFi AP services |
-| `restart-site` | Restart the Jekyll systemd service |
-| `update-system` | Pull latest config and rebuild NixOS (`nixos-rebuild switch`) |
+| `make-gallery <dir>` | Catalog a directory of media into Records + a Collection |
+| `gallery-status` | Plain-English health check of WiFi, site builder, and web server |
+| `restart-site` | Restart the site builder if the collection stops updating |
+| `update-system` | Pull the latest configuration and rebuild NixOS |
+| `wifi-qr` | Regenerate the printable WiFi join QR code |
 
 ---
 
-## Custom Nix Packages
+## Why memex2 is not a Nix package
 
-Several components of Alice are custom codebases that will be packaged as Nix derivations and referenced as flake inputs. When each repo is published, it gets a `flake.nix` that exposes a Nix package, then gets added to `nixos/flake.nix` as an input.
+memex2 is deliberately a plain git checkout in the attendant's home directory, not a Nix derivation
+or flake input.
 
-| Package | Source | Nix package type |
-|---|---|---|
-| Custom Jekyll site | GitHub (TBD) | `pkgs.stdenv.mkDerivation` or bundled Ruby env |
-| make-gals | GitHub (TBD) | `pkgs.buildNpmPackage` |
-| Other codebase (TBD) | GitHub (TBD) | TBD |
+Its CLI writes generated content — `manifest.json`, Records, Collections — back into its own working
+tree, and the media library lives inside that tree too. The Nix store is read-only, so a packaged
+memex2 would need its working directory somewhere else anyway, losing the benefit. Nix's job here is
+just to provide `nodejs`, run the systemd services, and point the attendant aliases at the checkout.
 
-**Pattern for each:**
-1. Add `flake.nix` to the tool's own repo exposing a `packages.x86_64-linux.default`
-2. Add it as an input in `nixos/flake.nix`
-3. Pass the input's packages into the host config via `specialArgs` or overlay
-4. Add the package to `environment.systemPackages`
-
-During development (before repos are published), use a local path input:
-```nix
-make-gals.url = "path:/home/gallery/make-gals";
-```
+The tradeoff: memex2's version is not pinned by the flake. Updating it is `git pull` in
+`~/memex2`, separate from `update-system`.
 
 ---
 
 ## Future / Planned
 
-- **Syncthing**: sync asset directories and MD files to other machines
+- **Syncthing**: sync the media library and Records to other machines
 - **Captive portal**: auto-redirect visitors to the site when joining WiFi
 - **Auto-login**: GNOME autologin for the `gallery` user so attendant just powers on
-- **Production flake modules**: split config into focused module files
+- **External library mode**: serve the media library from outside the memex2 checkout (e.g. a second drive). Designed in memex2's own repo (`docs/specs/2026-08-10-external-library-mode-design.md`); once it lands, Alice sets `libraryMode: external` and points nginx at the new location.
