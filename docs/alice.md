@@ -215,6 +215,12 @@ Reboot, remove USB. Log in as `gallery` with the initial password `password`, th
 passwd gallery
 ```
 
+> **Why the initial password matters.** `initialPassword` applies only when the account is first
+> created. Earlier versions of this config set no password at all, which gives the account a
+> disabled login (`!` in `/etc/shadow`) — no password works, and there is no way in as `gallery` to
+> run `passwd` in the first place. If you are ever locked out like that, boot the installer USB and
+> use `nixos-enter --root /mnt` to set the password from outside, then reboot.
+
 **8. Install the collection software (memex2)**
 
 ```bash
