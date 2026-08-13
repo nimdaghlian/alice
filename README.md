@@ -4,13 +4,15 @@ NixOS configuration for the Alice gallery kiosk — a ThinkCentre running GNOME 
 own WiFi network and serves a digital collection to visitors at `http://alice`. Managed day to day
 by a non-technical attendant through a handful of named commands.
 
-- **Full documentation and install walkthrough:** [`docs/alice.md`](docs/alice.md)
+- **Install walkthrough:** [`install.md`](install.md) — the checklist to follow at the keyboard
+- **Full documentation:** [`docs/alice.md`](docs/alice.md) — hardware, architecture, attendant workflow
 - **Design specs:** [`docs/superpowers/specs/`](docs/superpowers/specs/)
 - **Collection software:** [memex2](https://github.com/nimdaghlian/memex2) — a separate repo, cloned
   onto the machine rather than packaged into the flake (reasoning in `docs/alice.md`)
 
 Most of the system is declarative and identical across units. This README covers the exception:
-everything that has to be set by hand for each physical machine.
+everything that has to be set by hand for each physical machine — *what* and *why*, with
+[`install.md`](install.md) carrying the ordered *how*.
 
 ---
 
@@ -110,19 +112,12 @@ Note this is a NixOS option, not a preference key, so it goes in a module or the
 
 ### On the machine only (never committed)
 
-**5. Library disk** — the media library gets its own disk, mounted at `/srv/library`. Partition and
-mount it during install **before** running `nixos-generate-config`, which writes `fileSystems`
-entries for whatever is mounted under `/mnt` at that moment — mount it after and you are hand-writing
-the entry instead:
+**5. Library disk** — the media library gets its own disk, mounted at `/srv/library` (commands in
+[`install.md`](install.md) step 2b).
 
-```bash
-lsblk                                    # confirm the target disk
-parted /dev/nvme0n1 -- mklabel gpt
-parted /dev/nvme0n1 -- mkpart primary ext4 1MB 100%
-mkfs.ext4 -L alice-library /dev/nvme0n1p1
-mkdir -p /mnt/srv/library
-mount /dev/nvme0n1p1 /mnt/srv/library
-```
+Order matters: partition and mount it **before** `nixos-generate-config`, which writes `fileSystems`
+entries for whatever is mounted under `/mnt` at that moment. Mount it after and you are hand-writing
+the entry instead.
 
 Ownership is handled declaratively — a tmpfiles rule sets `/srv/library` to the `gallery` user at
 boot, so no manual `chown` is needed on a freshly formatted disk.
@@ -130,16 +125,8 @@ boot, so no manual `chown` is needed on a freshly formatted disk.
 The path is configurable via `alice.site.libraryPath`, but it must match memex2's `library:` setting
 (item 8) or the generated URLs and the files on disk will disagree.
 
-**6. WiFi credentials** — the one secret. Seeded during install from a committed template, then
-edited in place:
-
-```bash
-# During install the repo is cloned to /tmp/alice and the target system is mounted at /mnt
-mkdir -p /mnt/etc/alice
-cp /tmp/alice/nixos/hosts/alice/wifi-credentials.example /mnt/etc/alice/wifi-credentials
-chmod 600 /mnt/etc/alice/wifi-credentials
-$EDITOR /mnt/etc/alice/wifi-credentials
-```
+**6. WiFi credentials** — the one secret. Seeded during install from a committed template
+([`install.md`](install.md) step 5), then edited in place at `/etc/alice/wifi-credentials`:
 
 ```
 SSID=AliceGallery
@@ -166,16 +153,8 @@ no password at all, which produces a disabled login (`!` in `/etc/shadow`) — n
 there is no way in as `gallery` to fix it. If that happens, boot the installer USB and use
 `nixos-enter --root /mnt` to set it from outside.
 
-**8. memex2 checkout** — the collection software, cloned into the attendant's home:
-
-```bash
-git clone https://github.com/nimdaghlian/memex2 ~/memex2
-cd ~/memex2 && npm install
-cp memex.config.yml.example memex.config.yml
-$EDITOR memex.config.yml
-```
-
-Four values matter:
+**8. memex2 checkout** — the collection software, cloned to `~/memex2` and `npm install`ed
+([`install.md`](install.md) step 8). Four values in its `memex.config.yml` matter:
 
 ```yaml
 memexId: alice-1              # unique per unit; identifies this machine in the catalog
@@ -188,21 +167,14 @@ Only the source lives in this checkout. The build output goes to `/srv/www/alice
 so nothing here is served directly. The `eleventy` service will not start until `npm install` has
 run; `gallery-status` reports this.
 
-**9. Config repo clone** — so `update-system` has something to pull from. `nixos-generate-config`
-already wrote to `/etc/nixos` during install, so move it aside first or the clone fails:
-
-```bash
-sudo mv /etc/nixos /etc/nixos.orig
-sudo git clone https://github.com/nimdaghlian/alice /etc/nixos
-```
+**9. Config repo clone** — this repo at `/etc/nixos`, so `update-system` has something to pull from
+([`install.md`](install.md) step 8). `nixos-generate-config` already wrote there during install, so
+it has to be moved aside first or the clone fails.
 
 The path is configurable via `alice.configRepo` if you would rather it live elsewhere.
 
-**10. Printed QR code** — generate after the credentials are set, then print it for the wall:
-
-```bash
-wifi-qr      # writes /home/gallery/wifi-qr.png
-```
+**10. Printed QR code** — run `wifi-qr` once the credentials are set. Writes
+`/home/gallery/wifi-qr.png`; print it for the wall.
 
 ---
 

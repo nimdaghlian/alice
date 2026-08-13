@@ -2,9 +2,9 @@
 
 Art gallery kiosk running NixOS. Managed by a non-technical attendant. Visitors connect to Alice's WiFi and browse the gallery's digital collection at `http://alice`.
 
-For a checklist of everything that must be configured by hand on each machine, see the
-[README](../README.md). This document is the full reference: architecture, workflow, and the
-step-by-step install walkthrough.
+This document is the reference: hardware, architecture, and the attendant's workflow. Two companions
+sit alongside it — [`README.md`](../README.md) for what must be configured by hand on each machine,
+and [`install.md`](../install.md) for the step-by-step install walkthrough.
 
 ---
 
@@ -60,7 +60,7 @@ The attendant does not need to use a terminal for routine work. All terminal ope
 
 Alice creates its own isolated WiFi network. It does **not** serve content over the internet.
 
-- **SSID**: set in `/etc/alice/wifi-credentials` during install (see Installation, step 5b)
+- **SSID**: set in `/etc/alice/wifi-credentials` during install (see [`install.md`](../install.md))
 - **Site URL**: `http://alice` (or `http://10.0.0.1`). Type the full `http://` — a bare `alice` has no dot, so some browsers treat it as a search term.
 - **QR code**: Printed or displayed near the kiosk — encodes WiFi join credentials
 - **Internet access**: Alice *can* connect to the internet (for updates) but does not expose the collection publicly. DNS, DHCP, and HTTP are firewalled to the AP interface only.
@@ -151,198 +151,19 @@ Per-unit values win; anything not mentioned falls back to the shared defaults. T
 
 ## Installation
 
-### Prerequisites
+The step-by-step walkthrough lives in **[`install.md`](../install.md)** at the repo root — a single
+checklist to follow at the keyboard, kept in one place so it cannot drift from this document.
 
-- NixOS minimal ISO on a USB drive (download from nixos.org)
-- This repo accessible (USB copy or network)
-- Alice machine physically available
+Read [`README.md`](../README.md) first for what has to be configured by hand on each machine, and
+the Serving Architecture section above for why the paths are what they are.
 
-### Steps
+Two things that trip up an install and are easy to miss:
 
-**1. Boot from USB**
-
-Enter BIOS (F1 on ThinkCentre at POST), set boot order to USB first.
-
-**2. Drop into a root shell**
-
-The live environment requires `sudo` for disk operations. To avoid typing it repeatedly:
-
-```bash
-sudo -i
-```
-
-**3. Partition disks**
-
-First identify the target drive — be careful not to confuse it with the USB installer:
-
-```bash
-lsblk    # system drive is ~400GB; USB will be smaller with the ISO on it
-```
-
-**If the drive has an existing OS (e.g. Windows)**, wipe it first:
-
-```bash
-wipefs -a /dev/sda
-```
-
-Then create a fresh GPT partition table:
-
-```bash
-parted /dev/sda -- mklabel gpt
-parted /dev/sda -- mkpart ESP fat32 1MB 512MB
-parted /dev/sda -- set 1 esp on
-parted /dev/sda -- mkpart primary ext4 512MB 100%
-```
-
-**4. Format and mount**
-
-```bash
-mkfs.fat -F32 /dev/sda1
-mkfs.ext4 /dev/sda2
-mount /dev/sda2 /mnt
-mkdir -p /mnt/boot
-mount /dev/sda1 /mnt/boot
-```
-
-Run `lsblk` again to confirm the layout looks right before continuing.
-
-**4b. Prepare the library drive**
-
-The media library gets its own disk at `/srv/library`. Do this **before** step 5 —
-`nixos-generate-config` writes `fileSystems` entries for whatever is mounted under `/mnt` at that
-moment, so mounting now means the entry is generated for you.
-
-```bash
-lsblk                                    # confirm the library disk, e.g. /dev/nvme0n1
-parted /dev/nvme0n1 -- mklabel gpt
-parted /dev/nvme0n1 -- mkpart primary ext4 1MB 100%
-mkfs.ext4 -L alice-library /dev/nvme0n1p1
-mkdir -p /mnt/srv/library
-mount /dev/nvme0n1p1 /mnt/srv/library
-```
-
-Skip the `mklabel`/`mkfs` lines if the disk already holds a library you want to keep. Ownership is
-set declaratively at boot, so no `chown` is needed here.
-
-**5. Generate hardware config**
-
-```bash
-git clone https://github.com/nimdaghlian/alice /tmp/alice
-nixos-generate-config --root /mnt
-cp /mnt/etc/nixos/hardware-configuration.nix /tmp/alice/nixos/hosts/alice-1/hardware-configuration.nix
-```
-
-Check that the generated file contains a `fileSystems."/srv/library"` entry — if not, the library
-disk was not mounted when this ran.
-
-This file is machine-specific (disk UUIDs, kernel modules) and committed to the repo so each unit's profile is preserved. For subsequent machines use `alice-2`, `alice-3`, etc.
-
-Commit the hardware config locally to avoid a "dirty git tree" warning during install:
-
-```bash
-cd /tmp/alice
-git add nixos/hosts/alice-1/hardware-configuration.nix
-git commit -m "add alice-1 hardware config"
-```
-
-**5b. Seed WiFi credentials**
-
-```bash
-mkdir -p /mnt/etc/alice
-cp /tmp/alice/nixos/hosts/alice/wifi-credentials.example /mnt/etc/alice/wifi-credentials
-chmod 600 /mnt/etc/alice/wifi-credentials
-$EDITOR /mnt/etc/alice/wifi-credentials   # fill in real SSID/password
-```
-
-This file lives outside git and outside the Nix store — `hostapd` and the `wifi-qr` alias both read it at runtime.
-
-**5c. Validate the configuration**
-
-The live installer has Nix, and this is the cheapest place to catch a bad option name or module
-merge — seconds here versus a failed `nixos-install`:
-
-```bash
-nix --extra-experimental-features 'nix-command flakes' \
-  eval /tmp/alice/nixos#nixosConfigurations.alice-1.config.system.build.toplevel.drvPath
-```
-
-A `.drv` path means the whole configuration evaluated. On an error, fix it in `/tmp/alice`, commit,
-and re-run — then carry those fixes back to the repo afterwards.
-
-**6. Install**
-
-```bash
-nixos-install --flake /tmp/alice/nixos#alice-1
-```
-
-Set the `gallery` user password when prompted.
-
-**7. First boot**
-
-Reboot, remove USB. Log in as `gallery` with the initial password `password`, then change it:
-
-```bash
-passwd gallery
-```
-
-> **Why the initial password matters.** `initialPassword` applies only when the account is first
-> created. Earlier versions of this config set no password at all, which gives the account a
-> disabled login (`!` in `/etc/shadow`) — no password works, and there is no way in as `gallery` to
-> run `passwd` in the first place. If you are ever locked out like that, boot the installer USB and
-> use `nixos-enter --root /mnt` to set the password from outside, then reboot.
-
-**8. Install the collection software (memex2)**
-
-```bash
-git clone https://github.com/nimdaghlian/memex2 ~/memex2
-cd ~/memex2
-npm install
-cp memex.config.yml.example memex.config.yml
-$EDITOR memex.config.yml
-```
-
-Four values matter, and the last three must match the Nix config:
-
-```yaml
-memexId: alice-1              # unique per unit; identifies this machine in the catalog
-libraryMode: external         # Alice is ALWAYS external — see Serving Architecture
-library: /srv/library         # must match alice.site.libraryPath
-libraryUrl: /library/         # must match nginx's location block
-```
-
-If `library` and `alice.site.libraryPath` disagree, the generated URLs and the files on disk point at
-different places and every image 404s.
-
-The site builder (`eleventy`) will fail to start until `npm install` has been run — `gallery-status` reports this.
-
-**9. Put the configuration repo in place**
-
-So `update-system` can pull and rebuild later. `nixos-generate-config` wrote its own files to
-`/etc/nixos` back in step 5, so that directory is **always** non-empty at this point and the clone
-will fail unless you move it aside first:
-
-```bash
-sudo mv /etc/nixos /etc/nixos.orig
-sudo git clone https://github.com/nimdaghlian/alice /etc/nixos
-```
-
-Nothing in `/etc/nixos.orig` is needed — the hardware config it contains was already copied into the
-repo in step 5, and the flake replaces `configuration.nix` entirely. Keep it until the first
-`update-system` succeeds, then delete it.
-
-**10. Verify**
-
-- GNOME desktop loads
-- `gallery-status` shows all four services OK
-- From a second device: join Alice's WiFi, open `http://alice`, confirm the collection loads
-
-**11. Print the WiFi join QR code**
-
-```bash
-wifi-qr
-```
-
-Writes `/home/gallery/wifi-qr.png`. Print it and display it near the kiosk.
+- **Mount the library drive before `nixos-generate-config`.** It writes `fileSystems` entries for
+  whatever is mounted under `/mnt` at that moment; mount afterwards and you are hand-writing the
+  entry.
+- **Set `libraryMode: external` in memex2's config.** Embedded is the default and cannot work with a
+  library on a separate disk. The symptom is a site that renders with every image missing.
 
 ---
 
