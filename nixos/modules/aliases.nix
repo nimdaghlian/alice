@@ -23,19 +23,48 @@ let
 
   # Catalog a directory of media into Records + a Collection. Thin wrapper over memex2's CLI so
   # the attendant never types a node invocation or a path into the checkout.
+  #
+  # MUST run from the checkout: memex2 resolves memex.config.yml from the current working
+  # directory (src/config.js, `join(cwd, CONFIG_NAME)`) and resolves relative `out`/`library`
+  # against it too. Run from anywhere else and it silently falls back to DEFAULTS —
+  # libraryMode "embedded", library "./library" — writing Records to the wrong place with wrong
+  # asset paths and no error. So: absolutize the target directory first, THEN cd.
   makeGallery = pkgs.writeShellScriptBin "make-gallery" ''
     set -euo pipefail
     cli="${cfg.checkout}/bin/memex.js"
     if [ ! -f "$cli" ]; then
-      echo "memex2 not found at ${cfg.checkout} — see docs/alice.md install steps" >&2
+      echo "memex2 not found at ${cfg.checkout} — see install.md" >&2
       exit 1
     fi
     if [ $# -eq 0 ]; then
       echo "usage: make-gallery <directory>" >&2
       echo "  Catalogs the media in <directory> into the collection site." >&2
+      echo "  Media lives under ${cfg.libraryPath}/<gallery-name>/" >&2
       exit 1
     fi
-    exec ${pkgs.nodejs}/bin/node "$cli" process "$@"
+    dir="$1"; shift
+    if [ ! -d "$dir" ]; then
+      echo "Not a directory: $dir" >&2
+      exit 1
+    fi
+    dir="$(cd "$dir" && pwd)"
+    cd "${cfg.checkout}"
+    exec ${pkgs.nodejs}/bin/node "$cli" process "$dir" "$@"
+  '';
+
+  # The full memex2 CLI (tag, update, verify, or no arguments for the interactive wizard).
+  # `npm link` cannot provide this on NixOS — the global npm prefix is in the read-only Nix
+  # store, which is what the EROFS error means. Same cd-to-checkout requirement as above, so
+  # pass absolute paths to subcommands that take one.
+  memexCli = pkgs.writeShellScriptBin "memex" ''
+    set -euo pipefail
+    cli="${cfg.checkout}/bin/memex.js"
+    if [ ! -f "$cli" ]; then
+      echo "memex2 not found at ${cfg.checkout} — see install.md" >&2
+      exit 1
+    fi
+    cd "${cfg.checkout}"
+    exec ${pkgs.nodejs}/bin/node "$cli" "$@"
   '';
 
   # One plain-English health summary of everything the kiosk needs to be working.
@@ -82,6 +111,7 @@ in
   environment.systemPackages = [
     wifiQr
     makeGallery
+    memexCli
     galleryStatus
     restartSite
     updateSystem
