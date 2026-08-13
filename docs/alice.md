@@ -13,7 +13,8 @@ step-by-step install walkthrough.
 | | |
 |---|---|
 | **Model** | ThinkCentre M710q |
-| **System drive** | ~400GB internal — OS, memex2 checkout (site + media library), Obsidian vault |
+| **System drive** | ~400GB internal — OS, memex2 checkout, built site, Obsidian vault |
+| **Library drive** | 1TB NVMe — the media library, mounted at `/srv/library` |
 | **Network** | Built-in WiFi — runs in AP (access point) mode |
 
 ## Software Stack
@@ -37,8 +38,8 @@ The attendant does not need to use a terminal for routine work. All terminal ope
 
 ### Adding new assets
 
-1. Copy media files into a gallery directory inside the media library (`~/memex2/site/library/`)
-2. Open Terminal and run `make-gallery <directory>`
+1. Copy media files into a gallery directory in the library: `/srv/library/<gallery-name>/`
+2. Open Terminal and run `make-gallery /srv/library/<gallery-name>`
    - Catalogs the media: one Record per asset, plus one Collection for the directory
 3. Open Obsidian and edit the generated MD files — add titles, descriptions, tags
 4. The site updates automatically (no action needed)
@@ -66,6 +67,41 @@ Alice creates its own isolated WiFi network. It does **not** serve content over 
 - **AP stack**: hostapd (access point) + dnsmasq (DHCP + DNS, and resolves `alice`)
 
 Visitors: scan QR code → join network → open browser → collection site loads automatically (captive portal redirect, or manual navigation to the URL).
+
+---
+
+## Serving Architecture
+
+One web server, no copy steps. Three locations, each with one job:
+
+```
+/home/gallery/memex2   memex2 checkout — SOURCE only (Records, templates, node_modules)
+/srv/library           media library, on the NVMe   → nginx serves at /library/
+/srv/www/alice         Eleventy builds directly here → nginx serves at /
+```
+
+Eleventy runs as a **builder, not a server**: `eleventy --watch --output /srv/www/alice`. It rebuilds
+the HTML whenever a Record changes and writes straight into the directory nginx serves. nginx is the
+only thing listening on a port.
+
+Three decisions here are load-bearing, and each was forced rather than chosen:
+
+**Alice always uses memex2's external library mode.** In embedded mode Eleventy passthrough-copies
+the library into the build output — on every rebuild under `--watch`, since Eleventy's copy-free
+passthrough only applies to `--serve`. At library scale that is untenable. Eleventy also refuses a
+passthrough source outside the project directory, so a library on its own disk cannot work any other
+way. memex2's `library:` setting must match `alice.site.libraryPath`.
+
+**The build output lives outside the checkout.** NixOS sets `ProtectHome` on nginx's systemd unit,
+making `/home` appear empty to the service no matter what the file permissions say. Serving the
+checkout's `_site` would 404 every request. Building into `/srv/www/alice` keeps nginx out of `/home`
+entirely and leaves the stock hardening intact.
+
+**The library is never copied, anywhere.** nginx reads it in place from the NVMe via an `alias`. The
+only thing that ever writes there is the memex2 CLI, adding `manifest.json` alongside the assets.
+
+Live-reload editing (`http://alice:8081`) is designed but not built — see
+`docs/superpowers/specs/2026-08-11-preview-mode-design.md`.
 
 ---
 
@@ -109,7 +145,7 @@ Per-unit values win; anything not mentioned falls back to the shared defaults. T
 ### Still planned
 
 - `gnome.nix` — autologin, kiosk hardening
-- `drives.nix` — second-drive mount, if the media library outgrows the system drive
+- Preview mode — live-reload editing vhost; see `docs/superpowers/specs/2026-08-11-preview-mode-design.md`
 
 ---
 
@@ -170,6 +206,24 @@ mount /dev/sda1 /mnt/boot
 
 Run `lsblk` again to confirm the layout looks right before continuing.
 
+**4b. Prepare the library drive**
+
+The media library gets its own disk at `/srv/library`. Do this **before** step 5 —
+`nixos-generate-config` writes `fileSystems` entries for whatever is mounted under `/mnt` at that
+moment, so mounting now means the entry is generated for you.
+
+```bash
+lsblk                                    # confirm the library disk, e.g. /dev/nvme0n1
+parted /dev/nvme0n1 -- mklabel gpt
+parted /dev/nvme0n1 -- mkpart primary ext4 1MB 100%
+mkfs.ext4 -L alice-library /dev/nvme0n1p1
+mkdir -p /mnt/srv/library
+mount /dev/nvme0n1p1 /mnt/srv/library
+```
+
+Skip the `mklabel`/`mkfs` lines if the disk already holds a library you want to keep. Ownership is
+set declaratively at boot, so no `chown` is needed here.
+
 **5. Generate hardware config**
 
 ```bash
@@ -177,6 +231,9 @@ git clone https://github.com/nimdaghlian/alice /tmp/alice
 nixos-generate-config --root /mnt
 cp /mnt/etc/nixos/hardware-configuration.nix /tmp/alice/nixos/hosts/alice-1/hardware-configuration.nix
 ```
+
+Check that the generated file contains a `fileSystems."/srv/library"` entry — if not, the library
+disk was not mounted when this ran.
 
 This file is machine-specific (disk UUIDs, kernel modules) and committed to the repo so each unit's profile is preserved. For subsequent machines use `alice-2`, `alice-3`, etc.
 
@@ -198,6 +255,19 @@ $EDITOR /mnt/etc/alice/wifi-credentials   # fill in real SSID/password
 ```
 
 This file lives outside git and outside the Nix store — `hostapd` and the `wifi-qr` alias both read it at runtime.
+
+**5c. Validate the configuration**
+
+The live installer has Nix, and this is the cheapest place to catch a bad option name or module
+merge — seconds here versus a failed `nixos-install`:
+
+```bash
+nix --extra-experimental-features 'nix-command flakes' \
+  eval /tmp/alice/nixos#nixosConfigurations.alice-1.config.system.build.toplevel.drvPath
+```
+
+A `.drv` path means the whole configuration evaluated. On an error, fix it in `/tmp/alice`, commit,
+and re-run — then carry those fixes back to the repo afterwards.
 
 **6. Install**
 
@@ -228,8 +298,20 @@ git clone https://github.com/nimdaghlian/memex2 ~/memex2
 cd ~/memex2
 npm install
 cp memex.config.yml.example memex.config.yml
-$EDITOR memex.config.yml     # set memexId (this machine's identity)
+$EDITOR memex.config.yml
 ```
+
+Four values matter, and the last three must match the Nix config:
+
+```yaml
+memexId: alice-1              # unique per unit; identifies this machine in the catalog
+libraryMode: external         # Alice is ALWAYS external — see Serving Architecture
+library: /srv/library         # must match alice.site.libraryPath
+libraryUrl: /library/         # must match nginx's location block
+```
+
+If `library` and `alice.site.libraryPath` disagree, the generated URLs and the files on disk point at
+different places and every image 404s.
 
 The site builder (`eleventy`) will fail to start until `npm install` has been run — `gallery-status` reports this.
 
@@ -283,10 +365,10 @@ Defined in `nixos/modules/aliases.nix` (production). All aliases are documented 
 memex2 is deliberately a plain git checkout in the attendant's home directory, not a Nix derivation
 or flake input.
 
-Its CLI writes generated content — `manifest.json`, Records, Collections — back into its own working
-tree, and the media library lives inside that tree too. The Nix store is read-only, so a packaged
-memex2 would need its working directory somewhere else anyway, losing the benefit. Nix's job here is
-just to provide `nodejs`, run the systemd services, and point the attendant aliases at the checkout.
+Its CLI writes generated content — Records and Collections — back into its own working tree, and the
+`memex.config.yml` it reads is per-machine. The Nix store is read-only, so a packaged memex2 would
+need a mutable working directory elsewhere regardless, losing the benefit. Nix's job here is just to
+provide `nodejs`, run the systemd services, and point the attendant aliases at the checkout.
 
 The tradeoff: memex2's version is not pinned by the flake. Updating it is `git pull` in
 `~/memex2`, separate from `update-system`.
@@ -295,7 +377,7 @@ The tradeoff: memex2's version is not pinned by the flake. Updating it is `git p
 
 ## Future / Planned
 
+- **Preview mode**: live-reload editing at `http://alice:8081` via an nginx-proxied Eleventy dev server. Spec'd in `docs/superpowers/specs/2026-08-11-preview-mode-design.md`; deferred until the base install works.
 - **Syncthing**: sync the media library and Records to other machines
 - **Captive portal**: auto-redirect visitors to the site when joining WiFi
 - **Auto-login**: GNOME autologin for the `gallery` user so attendant just powers on
-- **External library mode**: serve the media library from outside the memex2 checkout (e.g. a second drive). Designed in memex2's own repo (`docs/specs/2026-08-10-external-library-mode-design.md`); once it lands, Alice sets `libraryMode: external` and points nginx at the new location.

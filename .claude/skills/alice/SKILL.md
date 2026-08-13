@@ -2,11 +2,11 @@
 name: alice
 description: >
   Use when working on Alice — the NixOS gallery kiosk in ~/dev/alice. Covers the NixOS flake and its
-  modules (wifi-ap, aliases, eleventy, nginx), the hostapd/dnsmasq WiFi access point and QR join code,
-  the memex2 CLI + Eleventy site that replaced make-gals and Jekyll, the nginx + eleventy --watch
-  serving split (avoids duplicating the media library), the attendant workflow and bash aliases, and
-  the install procedure. Also use for questions about what on Alice is actually built versus only
-  designed.
+  modules (wifi-ap, settings, eleventy, nginx, aliases), the hostapd/dnsmasq WiFi access point and QR
+  join code, the memex2 CLI + Eleventy site that replaced make-gals and Jekyll, the serving layout
+  (/srv/library on its own disk, /srv/www/alice as build output, nginx as the only server), the
+  attendant workflow and bash aliases, and the install procedure. Also use for questions about what on
+  Alice is actually built versus only designed.
 ---
 
 # Alice
@@ -31,8 +31,9 @@ before assuming a feature exists.
 | Site builder (`modules/eleventy.nix`) + web server (`modules/nginx.nix`) | **Implemented** |
 | All five attendant aliases (`modules/aliases.nix`) | **Implemented** |
 | Example WiFi credentials file | **Implemented**, committed |
-| `gnome.nix` (autologin/kiosk hardening), `drives.nix` | **Not built** |
-| memex2 "external library mode" | **Spec'd in the memex2 repo** (`docs/specs/2026-08-10-external-library-mode-design.md`), implementation in progress there. Adds `libraryMode`/`libraryUrl` config. Alice switches to `external` once it lands. |
+| `gnome.nix` (autologin/kiosk hardening) | **Not built** |
+| memex2 external library mode | **Shipped and tested in the memex2 repo.** Alice depends on it — see Serving architecture. |
+| Preview mode (live-reload editing on `:8081`) | **Spec'd, deliberately not built** — `docs/superpowers/specs/2026-08-11-preview-mode-design.md`. Deferred until the base install works. |
 
 **Nothing has been installed on real hardware yet.** The whole config is pre-first-boot.
 
@@ -50,9 +51,13 @@ expect a few edit-and-retry cycles during the first `nixos-install`.
 
 Highest-risk unverified guesses, in rough order: `services.dnsmasq.settings` schema, the
 `networking.firewall.interfaces.<iface>` option path, NetworkManager's `interface-name:` unmanaged
-syntax, whether `npx` works under systemd with `HOME` set to the checkout, and whether nginx can
-traverse `/home/gallery` to reach the site (the `users.users.nginx.extraGroups` line in `nginx.nix`
-is an attempt at that, and may need `755` on the home directory instead).
+syntax, whether `npx` works under systemd with `HOME` set to the checkout, and whether Eleventy
+accepts an absolute `--output` outside the project directory (the flag itself is confirmed —
+`cmd.cjs:80` passes it as the constructor's second arg — but an out-of-project target is not).
+
+The nginx-can't-read-`/home` question is **resolved**, not pending: it was `ProtectHome`, and
+building into `/srv/www/alice` sidesteps it. Any advice about `chmod 755 /home/gallery` is obsolete
+and was wrong anyway — permissions can't defeat a mount namespace.
 
 ## Software stack
 
@@ -82,35 +87,50 @@ the checkout.
 
 If someone proposes `buildNpmPackage` for memex2, that was considered and rejected for this reason.
 
-## Serving: nginx + eleventy --watch, not eleventy --serve
+## Serving architecture
 
-Alice does **not** run Eleventy's own dev server (`--serve`) in production. Confirmed against
-Eleventy's source (`~/dev/memex2/node_modules/@11ty/eleventy` v3.1.6,
-`Util/PassthroughCopyBehaviorCheck.js`): Eleventy's no-copy passthrough behavior only applies when
-`runMode === "serve"`. Under `--watch` (needed for the curator's live-reload while cataloging), every
-rebuild does a real `recursive-copy` of passthrough content — including `site/library`, which can be
-large — into `_site/library`. That's a real, sourced problem, not a guess.
+Three locations, one web server, no copy steps anywhere:
 
-The fix: `eleventy --watch` runs build-only (no server, no port), and `nginx` is the single listener
-on port 80 with two roots — `/` → `_site/` (Eleventy's HTML output), `/library/` → an `alias`
-straight to `site/library/` (the source, never copied). See
-`docs/superpowers/specs/2026-08-06-memex2-migration-design.md`'s "Serving architecture" section for
-the full rationale. Built, in `modules/eleventy.nix` and `modules/nginx.nix`.
+```
+/home/gallery/memex2   memex2 checkout — SOURCE only
+/srv/library           media library, own NVMe      → nginx serves at /library/
+/srv/www/alice         eleventy --watch --output    → nginx serves at /
+```
 
-**Cross-repo dependency:** memex2's `eleventy.config.js` still has
-`addPassthroughCopy({ 'site/library': 'library' })`, which needs removing there — an Alice-side nginx
-config doesn't undo that. That edit belongs in `~/dev/memex2`, not here.
+Eleventy is a **builder, not a server** here: `eleventy --watch --output /srv/www/alice`. nginx is
+the only listener. Built, in `modules/eleventy.nix` and `modules/nginx.nix`; paths are the
+`alice.site.{checkout,libraryPath,outputPath}` options.
+
+Three constraints forced this shape. Each was verified in source, not assumed — and each looks like
+an arbitrary path choice until you know the reason, so don't "simplify" any of them away:
+
+**1. Alice always uses memex2's external library mode.** Eleventy's copy-free passthrough is gated to
+`runMode === "serve"` (`Util/PassthroughCopyBehaviorCheck.js`, v3.1.6: *"False when runMode is 'build'
+or 'watch'"*). Under `--watch` it does a real `recursive-copy` of the whole library every rebuild.
+Eleventy also refuses a passthrough source outside the project directory, so a library on its own
+disk cannot work in embedded mode at all. memex2's `library:` must equal `alice.site.libraryPath`.
+
+**2. Nothing nginx serves may live under `/home`.** NixOS 25.05 sets `ProtectHome = mkDefault true`
+on nginx's systemd unit — a mount-namespace block, so `/home` appears *empty* to the service and no
+`chmod`/group change can defeat it. Hence `--output /srv/www/alice` rather than the checkout's
+`_site`. (An earlier revision worked around this with `ProtectHome = mkForce false`; building into
+`/srv` removed the need and the stock hardening is now intact.)
+
+**3. Root-relative asset URLs resolve against the page's origin.** Records emit `/library/...`, so
+any server other than nginx that renders those pages must be on the same origin or the images 404.
+This is why preview mode is designed as an nginx proxy rather than a standalone dev server.
 
 ## Attendant workflow
 
 The attendant never needs raw Unix commands — everything is a named bash alias with a plain-English
 purpose.
 
-1. Copy media into a gallery directory
-2. Run `make-gallery <dir>` → wraps `memex process`, which hashes assets and writes `manifest.json`
-   plus Record/Collection `.md` files
+1. Copy media into `/srv/library/<gallery-name>/` (the NVMe, not the checkout)
+2. Run `make-gallery /srv/library/<gallery-name>` → wraps `memex process`, which hashes assets and
+   writes `manifest.json` beside them, plus Record/Collection `.md` into the checkout
 3. Edit the generated `.md` in Obsidian — titles, descriptions, tags
-4. The site rebuilds and re-serves automatically; no further action
+4. `eleventy --watch` rebuilds into `/srv/www/alice`; refresh the browser to see it. There is no
+   live reload — that's preview mode, spec'd but not built.
 
 All five are built, in `modules/aliases.nix`:
 
@@ -163,8 +183,8 @@ nixos/
   hosts/alice-1/config.nix         # optional per-unit preference overrides
   modules/settings.nix             # applies config.nix; declares alice.unit/configRepo
   modules/wifi-ap.nix              # hostapd + dnsmasq + AP firewall
-  modules/eleventy.nix             # eleventy --watch build service
-  modules/nginx.nix                # serves _site/ + site/library/ on :80
+  modules/eleventy.nix             # eleventy --watch --output; declares alice.site.*
+  modules/nginx.nix                # /srv/www/alice at /, /srv/library at /library/
   modules/aliases.nix              # the five attendant commands
 docs/alice.md                      # main doc — current as of the memex2 migration
 docs/superpowers/specs/            # design specs
@@ -191,9 +211,12 @@ on-machine clone `update-system` pulls from).
 
 ## Open questions
 
-- **Where assets live long-term.** The media library currently sits inside the memex2 checkout on
-  the system drive (`site/library`), which is what nginx's `/library/` alias points at. The
-  second-drive idea from earlier docs is deferred, pending memex2's external library mode.
+Where assets live is **resolved**: a dedicated 1TB NVMe mounted at `/srv/library`, with memex2 in
+external mode. Earlier docs describing a library inside the checkout, or an undecided second drive,
+are superseded.
+
+Nothing else is open at the design level. What remains is empirical — whether the config actually
+evaluates and boots, which the first install answers.
 
 ## Conventions
 
