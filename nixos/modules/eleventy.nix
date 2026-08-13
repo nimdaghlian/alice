@@ -20,6 +20,23 @@ in
       default = "gallery";
       description = "User that owns the memex2 checkout and runs the site builder.";
     };
+
+    libraryPath = lib.mkOption {
+      type = lib.types.str;
+      default = "/srv/library";
+      description = ''
+        Media library root, served by nginx at /library/. Deliberately OUTSIDE the checkout
+        and outside /home: this is normally a dedicated disk, and nginx's systemd unit sets
+        ProtectHome, so anything under /home is invisible to it.
+
+        memex2's own memex.config.yml must agree with this path:
+          libraryMode: external
+          library: /srv/library
+          libraryUrl: /library/
+        Embedded mode cannot be used here — Eleventy refuses a passthrough source outside
+        the project directory.
+      '';
+    };
   };
 
   config = {

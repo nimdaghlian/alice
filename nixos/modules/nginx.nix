@@ -8,11 +8,13 @@ in
   # The production HTTP frontend. Two roots under ONE origin, so /library/... URLs emitted by
   # memex2's templates resolve the same way they do in local development:
   #
-  #   /          → _site/        (Eleventy's build output, HTML)
-  #   /library/  → site/library/ (the media library, served from source — never copied)
+  #   /          → <checkout>/_site   (Eleventy's build output, HTML)
+  #   /library/  → alice.site.libraryPath, default /srv/library (the media library, on its own
+  #               disk, served straight from source — never copied)
   #
-  # Serving the library straight from its source directory is the whole point: Eleventy's
-  # passthrough copy would otherwise duplicate it into _site/ on every rebuild.
+  # memex2 must be configured for `libraryMode: external` with a matching `library:` path.
+  # Embedded mode cannot serve a library on a separate disk at all: Eleventy rejects a
+  # passthrough source outside the project directory.
   services.nginx = {
     enable = true;
 
@@ -25,18 +27,31 @@ in
       };
 
       locations."/library/" = {
-        alias = "${cfg.checkout}/site/library/";
+        alias = "${cfg.libraryPath}/";
         extraConfig = ''
-          # Media files are content-addressed by memex2 and effectively immutable.
           autoindex off;
         '';
       };
     };
   };
 
-  # nginx runs as its own user and must traverse the attendant's home to reach the checkout.
-  # Without this the site returns 403 even though the paths are correct.
-  users.users.nginx.extraGroups = [ "users" ];
+  # NixOS sets ProtectHome = mkDefault true on nginx's systemd unit, which makes /home appear
+  # EMPTY to the service — every request for the site under /home/gallery/memex2/_site would
+  # 404 regardless of file permissions, since this is a mount-namespace block rather than an
+  # access-control one. The media library lives outside /home precisely to avoid this, but the
+  # Eleventy build output still sits in the attendant's checkout (they edit Records there in
+  # Obsidian), so the protection has to be relaxed for nginx to read it.
+  #
+  # Narrower alternative, worth testing later: keep ProtectHome and re-expose just the build
+  # output with BindReadOnlyPaths = [ "${cfg.checkout}/_site" ].
+  systemd.services.nginx.serviceConfig.ProtectHome = lib.mkForce false;
+
+  # Ensure the library root exists and is writable by the attendant before anything uses it —
+  # `memex process` writes manifest.json into asset directories, and a freshly formatted disk
+  # is root-owned.
+  systemd.tmpfiles.rules = [
+    "d ${cfg.libraryPath} 0755 ${cfg.user} users -"
+  ];
 
   # Visitors reach the site over the AP only. Scoped to that interface so Alice does not expose
   # the collection on any other network it joins (e.g. ethernet for updates).
