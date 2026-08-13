@@ -68,14 +68,20 @@ in
       serviceConfig = {
         Type = "simple";
         WorkingDirectory = cfg.checkout;
-        # Runs Eleventy from the checkout's own node_modules (installed by `npm install` during
-        # setup), so no globally packaged Eleventy is needed.
-        ExecStart = "${pkgs.nodejs}/bin/npx eleventy --watch --output ${cfg.outputPath}";
+        # Invoke Eleventy's entry point directly rather than through `npx`. npx adds package
+        # resolution, a writable cache, and possible registry lookups — none of which we want in a
+        # systemd unit, and all of which can fail before Eleventy even starts. (It did: npx exited
+        # 254 on the first real install, while Eleventy itself only ever exits 0 or 1.)
+        # cmd.cjs is the `bin.eleventy` entry from @11ty/eleventy's package.json.
+        ExecStart =
+          "${pkgs.nodejs}/bin/node ${cfg.checkout}/node_modules/@11ty/eleventy/cmd.cjs"
+          + " --watch --output ${cfg.outputPath}";
         User = cfg.user;
         Restart = "on-failure";
         RestartSec = 5;
       };
-      # npx needs a writable HOME for its cache; without this it fails under systemd.
+      # Eleventy and its plugins expect a writable HOME; the checkout is the natural choice since
+      # the service already owns it.
       environment.HOME = cfg.checkout;
     };
 
