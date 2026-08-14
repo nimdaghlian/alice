@@ -92,6 +92,35 @@ let
     check nginx    "Collection site is being served"
   '';
 
+  # Visitors scan this AFTER joining the WiFi. A single QR cannot both join a network and open a
+  # URL — those are different payload formats — so this is a second code alongside wifi-qr.
+  # Uses the gateway IP rather than http://alice deliberately: it needs no DNS at all, which
+  # sidesteps phones that fall back to cellular DNS when a WiFi network has no internet. Nobody
+  # reads a QR code, so the uglier URL costs nothing.
+  siteQr = pkgs.writeShellScriptBin "site-qr" ''
+    set -euo pipefail
+    out="$HOME/site-qr.png"
+    url="http://10.0.0.1/"
+    ${pkgs.qrencode}/bin/qrencode -o "$out" "$url"
+    echo "QR code for $url written to $out"
+    echo "Print alongside the WiFi code: visitors scan to join, then scan this to browse."
+  '';
+
+  # Eleventy only ever writes output — it never removes files for deleted sources. So a removed
+  # gallery keeps its generated pages in the served directory indefinitely. This wipes the build
+  # output and rebuilds from scratch, which is the only way to make a deletion take effect.
+  rebuildSite = pkgs.writeShellScriptBin "rebuild-site" ''
+    set -euo pipefail
+    out="${cfg.outputPath}"
+    case "$out" in
+      /|""|/srv|/home) echo "Refusing to clear $out" >&2; exit 1 ;;
+    esac
+    echo "Clearing $out and rebuilding from scratch..."
+    sudo find "$out" -mindepth 1 -delete
+    sudo systemctl restart eleventy
+    echo "Rebuilt. Pages for deleted galleries are now gone."
+  '';
+
   restartSite = pkgs.writeShellScriptBin "restart-site" ''
     set -euo pipefail
     # Only the builder needs restarting for content problems; nginx serves whatever is on disk
@@ -115,10 +144,12 @@ in
 {
   environment.systemPackages = [
     wifiQr
+    siteQr
     makeGallery
     memexCli
     galleryStatus
     restartSite
+    rebuildSite
     updateSystem
     pkgs.qrencode
   ];
