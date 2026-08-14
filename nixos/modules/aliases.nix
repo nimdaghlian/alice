@@ -140,6 +140,24 @@ let
     sudo ${pkgs.git}/bin/git -C "$repo" pull
     sudo nixos-rebuild switch --flake "$repo/nixos#${config.alice.unit}"
   '';
+
+  # memex2 is deliberately not a Nix derivation (its CLI writes generated content back into its
+  # own working tree), so update-system's rebuild never touches it. This is the equivalent for
+  # that live checkout: pull, reinstall in case dependencies changed, then restart the builder so
+  # the new code takes effect.
+  updateMemex = pkgs.writeShellScriptBin "update-memex" ''
+    set -euo pipefail
+    checkout="${cfg.checkout}"
+    if [ ! -d "$checkout/.git" ]; then
+      echo "No memex2 checkout at $checkout — see install.md" >&2
+      exit 1
+    fi
+    echo "This pulls the latest memex2 and restarts the collection site builder. It may take a while."
+    ${pkgs.git}/bin/git -C "$checkout" pull
+    ${pkgs.nodejs}/bin/npm install --prefix "$checkout"
+    sudo systemctl restart eleventy
+    echo "memex2 updated and the site builder restarted."
+  '';
 in
 {
   environment.systemPackages = [
@@ -151,6 +169,7 @@ in
     restartSite
     rebuildSite
     updateSystem
+    updateMemex
     pkgs.qrencode
   ];
 }
