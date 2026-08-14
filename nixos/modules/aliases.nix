@@ -3,22 +3,27 @@
 let
   cfg = config.alice.site;
 
+  # The credentials file is root-only (mode 600), but this alias is attendant-facing and runs as
+  # the gallery user — so the read goes through sudo. Without it the grep fails with a permission
+  # error that surfaces as a misleading "missing SSID or PASSWORD".
   wifiQr = pkgs.writeShellScriptBin "wifi-qr" ''
     set -euo pipefail
     creds="/etc/alice/wifi-credentials"
-    out="/home/gallery/wifi-qr.png"
-    if [ ! -f "$creds" ]; then
-      echo "Missing $creds — see docs/alice.md install steps" >&2
+    out="$HOME/wifi-qr.png"
+    if ! sudo test -f "$creds"; then
+      echo "Missing $creds — see install.md" >&2
       exit 1
     fi
-    ssid=$(grep -E '^SSID=' "$creds" | cut -d= -f2-)
-    password=$(grep -E '^PASSWORD=' "$creds" | cut -d= -f2-)
+    text="$(sudo cat "$creds")"
+    ssid=$(printf '%s\n' "$text" | grep -E '^SSID=' | cut -d= -f2-)
+    password=$(printf '%s\n' "$text" | grep -E '^PASSWORD=' | cut -d= -f2-)
     if [ -z "$ssid" ] || [ -z "$password" ]; then
       echo "$creds is missing SSID or PASSWORD" >&2
       exit 1
     fi
     ${pkgs.qrencode}/bin/qrencode -o "$out" "WIFI:T:WPA;S:$ssid;P:$password;;"
     echo "QR code written to $out"
+    echo "SSID: $ssid"
   '';
 
   # Catalog a directory of media into Records + a Collection. Thin wrapper over memex2's CLI so

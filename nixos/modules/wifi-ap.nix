@@ -3,23 +3,18 @@
 let
   cfg = config.alice.wifiAp;
 
-  hostapdTemplate = pkgs.writeText "hostapd.conf.template" ''
-    interface=${cfg.interface}
-    driver=nl80211
-    ssid=@SSID@
-    hw_mode=g
-    channel=6
-    wpa=2
-    wpa_passphrase=@PASSWORD@
-    wpa_key_mgmt=WPA-PSK
-    rsn_pairwise=CCMP
-  '';
-
+  # Written by an ExecStartPre at service start, never at build time — the passphrase must not
+  # reach the world-readable Nix store.
+  #
+  # Uses a quoted heredoc rather than substituting into a template with `sed`. sed treats `/`,
+  # `&` and `\` as special in the replacement text, so a passphrase containing any of them would
+  # silently render a corrupt config — a nasty failure mode for a value the operator chooses
+  # freely. Shell expansion inside a heredoc has no such special cases.
   renderHostapdConf = pkgs.writeShellScript "render-hostapd-conf" ''
     set -euo pipefail
     creds="/etc/alice/wifi-credentials"
     if [ ! -f "$creds" ]; then
-      echo "Missing $creds — see docs/alice.md install steps" >&2
+      echo "Missing $creds — see install.md" >&2
       exit 1
     fi
     ssid=$(grep -E '^SSID=' "$creds" | cut -d= -f2-)
@@ -28,9 +23,24 @@ let
       echo "$creds is missing SSID or PASSWORD" >&2
       exit 1
     fi
+    # WPA2 requires 8-63 characters; hostapd refuses to start otherwise, well after install.
+    if [ ''${#password} -lt 8 ] || [ ''${#password} -gt 63 ]; then
+      echo "PASSWORD in $creds must be 8-63 characters (WPA2 requirement)" >&2
+      exit 1
+    fi
     mkdir -p /run/hostapd
-    sed -e "s/@SSID@/$ssid/" -e "s/@PASSWORD@/$password/" ${hostapdTemplate} > /run/hostapd/hostapd.conf
-    chmod 600 /run/hostapd/hostapd.conf
+    umask 077
+    cat > /run/hostapd/hostapd.conf <<EOF
+    interface=${cfg.interface}
+    driver=nl80211
+    ssid=$ssid
+    hw_mode=g
+    channel=6
+    wpa=2
+    wpa_passphrase=$password
+    wpa_key_mgmt=WPA-PSK
+    rsn_pairwise=CCMP
+    EOF
   '';
 in
 {
