@@ -1,4 +1,4 @@
-{ config, pkgs, ... }:
+{ config, pkgs, lib, ... }:
 
 {
   imports = [
@@ -8,6 +8,9 @@
     ../../modules/nginx.nix      # serves the built site + media library
     ../../modules/aliases.nix    # attendant commands
   ];
+
+  # obsidian is nonfree; scope the allow to just it rather than allowUnfree = true globally.
+  nixpkgs.config.allowUnfreePredicate = pkg: builtins.elem (lib.getName pkg) [ "obsidian" ];
 
   # Bootloader — assumes UEFI (ThinkCentre M710q ships with UEFI)
   boot.loader.systemd-boot.enable = true;
