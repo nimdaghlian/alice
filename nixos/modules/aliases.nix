@@ -142,9 +142,15 @@ let
   '';
 
   # memex2 is deliberately not a Nix derivation (its CLI writes generated content back into its
-  # own working tree), so update-system's rebuild never touches it. This is the equivalent for
-  # that live checkout: pull, reinstall in case dependencies changed, then restart the builder so
-  # the new code takes effect.
+  # own working tree), so update-system's rebuild never touches it. This keeps that live checkout
+  # in sync both ways: any local edits (Obsidian, memex CLI) are committed and pushed first, then
+  # upstream changes are pulled, dependencies reinstalled in case they changed, and the builder
+  # restarted so new code takes effect.
+  #
+  # Pushing requires a deploy key with write access set up on the machine (SSH keypair for the
+  # gallery user, public half added as a GitHub deploy key on the memex2 repo, remote set to the
+  # git@github.com:... SSH form) — see install.md. There is no fallback to a token or password:
+  # secrets stay off the machine's git history and out of the Nix store, same as wifi-credentials.
   updateMemex = pkgs.writeShellScriptBin "update-memex" ''
     set -euo pipefail
     checkout="${cfg.checkout}"
@@ -152,11 +158,20 @@ let
       echo "No memex2 checkout at $checkout — see install.md" >&2
       exit 1
     fi
-    echo "This pulls the latest memex2 and restarts the collection site builder. It may take a while."
-    ${pkgs.git}/bin/git -C "$checkout" pull
+    echo "This syncs Alice's memex2 checkout with GitHub and restarts the collection site builder. It may take a while."
+
+    cd "$checkout"
+    if [ -n "$(${pkgs.git}/bin/git status --porcelain)" ]; then
+      echo "Saving local changes..."
+      ${pkgs.git}/bin/git add -A
+      ${pkgs.git}/bin/git -c user.name="Alice" -c user.email="alice@localhost" commit -m "Automated sync from Alice"
+    fi
+
+    ${pkgs.git}/bin/git pull --rebase
+    ${pkgs.git}/bin/git push
     ${pkgs.nodejs}/bin/npm install --prefix "$checkout"
     sudo systemctl restart eleventy
-    echo "memex2 updated and the site builder restarted."
+    echo "memex2 synced and the site builder restarted."
   '';
 in
 {
