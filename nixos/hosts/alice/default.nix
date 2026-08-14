@@ -12,6 +12,7 @@
   # Bootloader — assumes UEFI (ThinkCentre M710q ships with UEFI)
   boot.loader.systemd-boot.enable = true;
   boot.loader.efi.canTouchEfiVariables = true;
+  boot.loader.systemd-boot.configurationLimit = 5;
 
   # Hostname
   networking.hostName = "alice";
@@ -48,12 +49,14 @@
   services.openssh.enable = true;
 
   # nodejs runs memex2 (its CLI and Eleventy); git clones and updates both repos.
+  # obsidian is the attendant's editor for the Markdown memex2 generates.
   environment.systemPackages = with pkgs; [
     git
     vim
     curl
     wget
     nodejs
+    obsidian
   ];
 
   # Must match the nixpkgs version in flake.nix

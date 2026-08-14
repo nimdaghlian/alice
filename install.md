@@ -50,6 +50,7 @@ sets ownership to `gallery` at boot.
 ```bash
 git clone https://github.com/nimdaghlian/alice /tmp/alice
 nixos-generate-config --root /mnt
+mkdir /tmp/alice/nixos/hosts/alice-1/
 cp /mnt/etc/nixos/hardware-configuration.nix \
    /tmp/alice/nixos/hosts/alice-1/hardware-configuration.nix
 cd /tmp/alice
