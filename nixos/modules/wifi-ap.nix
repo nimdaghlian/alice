@@ -91,6 +91,11 @@ in
         "dhcp-option" = [ "3,10.0.0.1" "6,10.0.0.1" ];
         # Makes http://alice work for anyone on the WiFi, with no client-side configuration.
         "address" = [ "/alice/10.0.0.1" ];
+        # Do NOT serve /etc/hosts to clients. NixOS puts `127.0.0.2 alice` there for the machine's
+        # own hostname, and dnsmasq reads /etc/hosts by default — so without this it hands visitors
+        # 127.0.0.2, their own loopback, and the site simply hangs. It looks fine when tested on
+        # Alice itself, where 127.0.0.2 is a local address nginx answers on.
+        no-hosts = true;
       };
     };
   };
